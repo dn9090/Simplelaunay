@@ -58,7 +58,7 @@ namespace Simplelaunay
 		/// <returns>The number of triangles.</returns>
 		public static int Triangulate(ReadOnlySpan<Vector2> vertices, Span<int> triangles)
 		{
-			if(triangles.Length * 3 < GetTriangleBufferSize(triangles.Length))
+			if(triangles.Length / 3 < GetTriangleBufferSize(vertices.Length))
 				throw new ArgumentOutOfRangeException(nameof(triangles));
 			
 			return Triangulate(vertices, MemoryMarshal.Cast<int, Triangle>(triangles));
@@ -100,10 +100,10 @@ namespace Simplelaunay
 			var polygon    = new List<Edge>();
 			var badIndices = new HashSet<int>();
 
-			var H = 0;
-
 			for(int v = 0; v < vertexCount; ++v)
 			{
+				var triangleIndex = 0;
+
 				for(int t = 0; t < triangleCount; ++t)
 				{
 					var a = triangles[t].a;
@@ -116,18 +116,19 @@ namespace Simplelaunay
 					var vb = b < vertexCount ? vertices[b] : superVertices[b - vertexCount];
 					var vc = c < vertexCount ? vertices[c] : superVertices[c - vertexCount];
 
+					// Remove triangles that contain the vertex in their circum circle and
+					// add their edges to the polygon.
 					if(InCircumCircle(va, vb, vc, vertices[v]))
 					{
-						badIndices.Add(t);
-						
 						polygon.Add(new Edge(triangles[t].a, triangles[t].b));
 						polygon.Add(new Edge(triangles[t].b, triangles[t].c));
 						polygon.Add(new Edge(triangles[t].c, triangles[t].a));
+					} else {
+						triangles[triangleIndex++] = triangles[t];
 					}
 				}
 
-				triangles.RemoveBadIndices(badIndices, ref triangleCount);
-				badIndices.Clear();
+				triangleCount = triangleIndex;
 
 				for(int i = 0; i < polygon.Count; ++i)
 				for(int j = i + 1; j < polygon.Count; ++j)
@@ -140,54 +141,53 @@ namespace Simplelaunay
 				}
 
 				polygon.RemoveBadIndices(badIndices);
-				badIndices.Clear();
-
-				// Construct the triangle from the edges of the polygon to
-				// the vertex.
+				
+				// Construct the triangle from the edges of the polygon to the vertex.
 				for(int i = 0; i < polygon.Count; ++i)
 					triangles[triangleCount++] = new Triangle(polygon[i].a, polygon[i].b, v);
 
-				if(triangleCount > H)
-					H = triangleCount;
-
+				badIndices.Clear();
 				polygon.Clear();
 			}
 
-			// Remove remaining triangles that have vertices in the super triangle.
-			for(int i = 0; i < triangleCount; ++i)
 			{
-				if(triangles[i].a >= vertexCount
-				|| triangles[i].b >= vertexCount
-				|| triangles[i].b >= vertexCount)
-					badIndices.Add(i);
-			}
+				var triangleIndex = 0;
 
-			triangles.RemoveBadIndices(badIndices, ref triangleCount);
+				// Remove remaining triangles that have vertices in the super triangle.
+				for(int i = 0; i < triangleCount; ++i)
+				{
+					if(triangles[i].a >= vertexCount
+					|| triangles[i].b >= vertexCount
+					|| triangles[i].b >= vertexCount)
+						continue;
+
+					triangles[triangleIndex++] = triangles[i];
+				}
+
+				triangleCount = triangleIndex;
+			}
 
 			return triangleCount;
 		}
 
 		internal static bool InCircumCircle(Vector2 a, Vector2 b, Vector2 c, Vector2 vertex)
 		{
-			var ab = a.LengthSquared();
-			var cd = b.LengthSquared();
-			var ef = c.LengthSquared();
+			var aq = a.LengthSquared();
+			var cq = b.LengthSquared();
+			var eq = c.LengthSquared();
 
-			var ax = a.X;
-			var ay = a.Y;
-			var bx = b.X;
-			var by = b.Y;
-			var cx = c.X;
-			var cy = c.Y;
+			var ac = a - c;
+			var cb = c - b;
+			var ba = b - a;
 
 			var circum = new Vector2();
 
-			circum.X = (ab * (cy - by) + cd * (ay - cy) + ef * (by - ay)) / (ax * (cy - by) + bx * (ay - cy) + cx * (by - ay));
-			circum.Y = (ab * (cx - bx) + cd * (ax - cx) + ef * (bx - ax)) / (ay * (cx - bx) + by * (ax - cx) + cy * (bx - ax));
+			circum.X = (aq * cb.Y + cq * ac.Y + eq * ba.Y) / (a.X * cb.Y + b.X * ac.Y + c.X * ba.Y);
+			circum.Y = (aq * cb.X + cq * ac.X + eq * ba.X) / (a.Y * cb.X + b.Y * ac.X + c.Y * ba.X);
 
 			circum /= 2f;
 
-			var radius   = (a - circum).LengthSquared();
+			var radius   = (a      - circum).LengthSquared();
 			var distance = (vertex - circum).LengthSquared();
 
 			return distance <= radius;
@@ -196,20 +196,6 @@ namespace Simplelaunay
 		internal static bool Equal(Edge lhs, Edge rhs)
 		{
 			return (lhs.a == rhs.a && lhs.b == rhs.b) || (lhs.a == rhs.b && lhs.b == rhs.a);
-		}
-
-		internal static void RemoveBadIndices(this Span<Triangle> triangles, HashSet<int> indices, ref int triangleCount)
-		{
-			var count = 0;
-
-			for(int i = 0; i < triangleCount; ++i)
-			{
-				if(indices.Contains(i))
-					continue;
-				triangles[count++] = triangles[i];
-			}
-
-			triangleCount = count;
 		}
 
 		internal static void RemoveBadIndices(this List<Edge> polygon, HashSet<int> indices)
